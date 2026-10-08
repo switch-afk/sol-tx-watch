@@ -1,0 +1,31 @@
+{
+  "name": "sol-tx-watch",
+  "version": "0.1.0",
+  "description": "Stream a Solana wallet's new transactions to your terminal in plain English.",
+  "bin": {
+    "sol-tx-watch": "bin/sol-tx-watch.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["solana", "wallet", "transactions", "websocket", "cli", "watch"],
+  "author": "switch-afk",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/switch-afk/sol-tx-watch.git"
+  },
+  "bugs": {
+    "url": "https://github.com/switch-afk/sol-tx-watch/issues"
+  },
+  "homepage": "https://github.com/switch-afk/sol-tx-watch#readme"
+}
