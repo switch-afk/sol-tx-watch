@@ -15,6 +15,17 @@ const EVENT = { wallet: TOKEN_PROGRAM, signature: 'sig123', slot: 7, failed: fal
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
+/** A successful summary in which TOKEN_PROGRAM moved the given lamports (fee included). */
+const transfer = (lamports) => ({
+  ok: true,
+  headline: 'Likely a SOL transfer',
+  json: {
+    feePayer: TOKEN_PROGRAM,
+    fee: { lamports: 5000 },
+    solChanges: [{ address: TOKEN_PROGRAM, lamports }],
+  },
+});
+
 function capture() {
   const state = { out: '', err: '' };
   state.io = {
@@ -49,11 +60,24 @@ function fakes() {
   return state;
 }
 
+/**
+ * Start run() with fakes and wait until it is watching.
+ * Returns { done } rather than the promise itself: awaiting a returned
+ * promise would wait for run() to finish, which only happens on shutdown.
+ */
+async function start(argv, f, c, extra = {}) {
+  const done = run(argv, { ...c.io, ...f.io, env: {}, ...extra });
+  await tick();
+  return { done };
+}
+
 test('--help prints usage and exits 0', async () => {
   const c = capture();
   assert.equal(await run(['--help'], c.io), 0);
   assert.match(c.out, /Usage:/);
-  assert.match(c.out, /--no-explain/);
+  for (const flag of ['--json', '--only-failed', '--min-sol', '--no-explain']) {
+    assert.ok(c.out.includes(flag), flag);
+  }
   assert.match(c.out, /SOL_TX_WATCH_RPC/);
   assert.match(c.out, /SOL_TX_WATCH_WS/);
 });
@@ -74,6 +98,24 @@ test('an unknown option is a usage error', async () => {
   const c = capture();
   assert.equal(await run(['--nope', TOKEN_PROGRAM], c.io), 2);
   assert.match(c.err, /Unknown option: --nope/);
+});
+
+test('--min-sol without a value is a usage error', async () => {
+  const c = capture();
+  assert.equal(await run([TOKEN_PROGRAM, '--min-sol'], c.io), 2);
+  assert.match(c.err, /--min-sol needs a value/);
+});
+
+test('--min-sol with a bad amount is a usage error', async () => {
+  const c = capture();
+  assert.equal(await run(['--min-sol', 'abc', TOKEN_PROGRAM], c.io), 2);
+  assert.match(c.err, /needs a number/);
+});
+
+test('--min-sol cannot be combined with --no-explain', async () => {
+  const c = capture();
+  assert.equal(await run(['--min-sol', '1', '--no-explain', TOKEN_PROGRAM], c.io), 2);
+  assert.match(c.err, /cannot be combined with --no-explain/);
 });
 
 test('an invalid wallet exits 1, says which one, and never starts watching', async () => {
@@ -102,8 +144,7 @@ test('an invalid endpoint exits 1 without echoing it', async () => {
 test('watches the deduplicated wallets and stops on shutdown', async () => {
   const c = capture();
   const f = fakes();
-  const done = run([TOKEN_PROGRAM, WRAPPED_SOL, TOKEN_PROGRAM], { ...c.io, ...f.io, env: {} });
-  await tick();
+  const { done } = await start([TOKEN_PROGRAM, WRAPPED_SOL, TOKEN_PROGRAM], f, c);
 
   assert.equal(f.calls.length, 1);
   assert.deepEqual(f.calls[0].wallets, [TOKEN_PROGRAM, WRAPPED_SOL]);
@@ -119,8 +160,7 @@ test('watches the deduplicated wallets and stops on shutdown', async () => {
 test('each transaction is printed with its plain-English summary', async () => {
   const c = capture();
   const f = fakes();
-  const done = run([TOKEN_PROGRAM], { ...c.io, ...f.io, env: {} });
-  await tick();
+  const { done } = await start([TOKEN_PROGRAM], f, c);
 
   f.calls[0].onTransaction(EVENT);
   await tick();
@@ -139,8 +179,7 @@ test('a transaction that could not be explained says why', async () => {
   const c = capture();
   const f = fakes();
   f.outcome = { ok: false, skipped: false, reason: 'the RPC does not have this transaction yet' };
-  const done = run([TOKEN_PROGRAM], { ...c.io, ...f.io, env: {} });
-  await tick();
+  const { done } = await start([TOKEN_PROGRAM], f, c);
 
   f.calls[0].onTransaction(EVENT);
   await tick();
@@ -155,8 +194,7 @@ test('skipped transactions print without a summary and trigger one busy notice',
   const c = capture();
   const f = fakes();
   f.outcome = { ok: false, skipped: true, reason: 'too many transactions at once' };
-  const done = run([TOKEN_PROGRAM], { ...c.io, ...f.io, env: {} });
-  await tick();
+  const { done } = await start([TOKEN_PROGRAM], f, c);
 
   f.calls[0].onTransaction(EVENT);
   f.calls[0].onTransaction({ ...EVENT, signature: 'sig456' });
@@ -175,8 +213,7 @@ test('skipped transactions print without a summary and trigger one busy notice',
 test('--no-explain prints plain event lines and never asks for a summary', async () => {
   const c = capture();
   const f = fakes();
-  const done = run(['--no-explain', TOKEN_PROGRAM], { ...c.io, ...f.io, env: {} });
-  await tick();
+  const { done } = await start(['--no-explain', TOKEN_PROGRAM], f, c);
 
   f.calls[0].onTransaction(EVENT);
   assert.deepEqual(f.explained, []);
@@ -187,13 +224,133 @@ test('--no-explain prints plain event lines and never asks for a summary', async
   await done;
 });
 
+test('--only-failed ignores successes without explaining them', async () => {
+  const c = capture();
+  const f = fakes();
+  const { done } = await start(['--only-failed', TOKEN_PROGRAM], f, c);
+
+  f.calls[0].onTransaction(EVENT);
+  f.calls[0].onTransaction({
+    ...EVENT,
+    signature: 'bad1',
+    failed: true,
+    err: { InstructionError: [0, 'Custom'] },
+  });
+  await tick();
+
+  assert.deepEqual(f.explained, ['bad1']);
+  assert.match(c.out, /FAILED {3}bad1/);
+  assert.ok(!c.out.includes('sig123'));
+
+  f.release();
+  await done;
+});
+
+test('--json prints one JSON object per line with the full summary', async () => {
+  const c = capture();
+  const f = fakes();
+  f.outcome = { ok: true, headline: 'Likely a swap', json: { headline: { kind: 'swap' } } };
+  const { done } = await start(['--json', TOKEN_PROGRAM], f, c);
+
+  f.calls[0].onTransaction(EVENT);
+  await tick();
+
+  const lines = c.out.trim().split('\n');
+  assert.equal(lines.length, 1);
+  const parsed = JSON.parse(lines[0]);
+  assert.equal(parsed.signature, 'sig123');
+  assert.equal(parsed.wallet, TOKEN_PROGRAM);
+  assert.equal(parsed.slot, 7);
+  assert.equal(parsed.status, 'success');
+  assert.equal(parsed.summary.headline.kind, 'swap');
+  assert.equal(parsed.summaryNote, null);
+  assert.equal(typeof parsed.seenAt, 'string');
+
+  f.release();
+  await done;
+});
+
+test('--json with --no-explain has no summary', async () => {
+  const c = capture();
+  const f = fakes();
+  const { done } = await start(['--json', '--no-explain', TOKEN_PROGRAM], f, c);
+
+  f.calls[0].onTransaction(EVENT);
+
+  const parsed = JSON.parse(c.out.trim());
+  assert.equal(parsed.summary, null);
+  assert.equal(parsed.summaryNote, null);
+
+  f.release();
+  await done;
+});
+
+test('--min-sol shows only transactions where a watched wallet moved enough SOL', async () => {
+  const c = capture();
+  const f = fakes();
+  f.explainer.explain = async (signature) =>
+    signature === 'big' ? transfer('-1000005000') : transfer('-505000');
+  const { done } = await start(['--min-sol', '1', TOKEN_PROGRAM], f, c);
+
+  f.calls[0].onTransaction({ ...EVENT, signature: 'big' });
+  f.calls[0].onTransaction({ ...EVENT, signature: 'small' });
+  await tick();
+
+  assert.ok(c.out.includes('big'));
+  assert.ok(!c.out.includes('small'));
+
+  f.release();
+  await done;
+});
+
+test('--min-sol=0.5 is accepted too', async () => {
+  const c = capture();
+  const f = fakes();
+  const { done } = await start(['--min-sol=0.5', TOKEN_PROGRAM], f, c);
+
+  assert.equal(f.calls.length, 1);
+
+  f.release();
+  await done;
+});
+
+test('--min-sol drops transactions it could not check because of load', async () => {
+  const c = capture();
+  const f = fakes();
+  f.outcome = { ok: false, skipped: true, reason: 'too many transactions at once' };
+  const { done } = await start(['--min-sol', '1', TOKEN_PROGRAM], f, c);
+
+  f.calls[0].onTransaction(EVENT);
+  await tick();
+
+  assert.equal(c.out, '');
+  assert.match(c.err, /could not be checked against --min-sol/);
+
+  f.release();
+  await done;
+});
+
+test('--min-sol still shows a transaction whose summary failed for another reason', async () => {
+  const c = capture();
+  const f = fakes();
+  f.outcome = { ok: false, skipped: false, reason: 'rpc down' };
+  const { done } = await start(['--min-sol', '1', TOKEN_PROGRAM], f, c);
+
+  f.calls[0].onTransaction(EVENT);
+  await tick();
+
+  assert.match(c.out, /\(no summary: rpc down\)/);
+
+  f.release();
+  await done;
+});
+
 test('a summary that arrives after shutdown is dropped', async () => {
   const c = capture();
   const f = fakes();
   let finish;
   f.explainer.explain = () => new Promise((resolve) => { finish = resolve; });
-  const done = run([TOKEN_PROGRAM], { ...c.io, ...f.io, env: {} });
-  await tick();
+  const { done } = await start([TOKEN_PROGRAM], f, c);
 
   f.calls[0].onTransaction(EVENT);
   f.release();
@@ -207,8 +364,7 @@ test('a summary that arrives after shutdown is dropped', async () => {
 test('status messages go to stderr and never touch stdout', async () => {
   const c = capture();
   const f = fakes();
-  const done = run([TOKEN_PROGRAM, WRAPPED_SOL], { ...c.io, ...f.io, env: {} });
-  await tick();
+  const { done } = await start([TOKEN_PROGRAM, WRAPPED_SOL], f, c);
 
   const { onStatus } = f.calls[0];
   onStatus({ type: 'ready', count: 2 });
@@ -229,12 +385,9 @@ test('status messages go to stderr and never touch stdout', async () => {
 test('an https RPC URL is streamed over wss and only its host is printed', async () => {
   const c = capture();
   const f = fakes();
-  const done = run([TOKEN_PROGRAM], {
-    ...c.io,
-    ...f.io,
+  const { done } = await start([TOKEN_PROGRAM], f, c, {
     env: { SOL_TX_WATCH_RPC: 'https://rpc.example.com/?api-key=abc' },
   });
-  await tick();
 
   assert.equal(f.calls[0].url, 'wss://rpc.example.com/?api-key=abc');
   f.calls[0].onStatus({ type: 'ready', count: 1 });

@@ -5,7 +5,8 @@ const { AddressError, validateAddress } = require('./address');
 const { parseArgs } = require('./args');
 const { EndpointError, RPC_ENV, WS_ENV, resolveEndpoint } = require('./endpoint');
 const { createExplainer } = require('./explainer');
-const { formatBlock, formatDelay, shortAddress } = require('./format');
+const { AmountError, parseSolAmount, passesMinSol } = require('./filters');
+const { formatBlock, formatDelay, formatJson, shortAddress } = require('./format');
 const { WatchError, watchWallets } = require('./watch');
 
 const HELP = `sol-tx-watch v${pkg.version}
@@ -13,9 +14,13 @@ const HELP = `sol-tx-watch v${pkg.version}
 Stream a Solana wallet's new transactions to your terminal in plain English.
 
 Usage:
-  sol-tx-watch [--no-explain] <wallet> [<wallet> ...]
+  sol-tx-watch [options] <wallet> [<wallet> ...]
 
 Options:
+  --json           Print one JSON object per line instead of text
+  --only-failed    Show only transactions that failed on-chain
+  --min-sol <n>    Show only transactions where a watched wallet gained or
+                   lost at least n SOL, not counting the fee (needs summaries)
   --no-explain     Skip the plain-English summaries (faster, lighter on your RPC)
   -h, --help       Show this help
   -v, --version    Show the version
@@ -40,6 +45,10 @@ Exit codes:
 const BUSY_FIRST =
   'Busy: some transactions are shown without a summary because too many arrive at once. ' +
   'Use --no-explain to turn summaries off.\n';
+
+const BUSY_FIRST_FILTER =
+  'Busy: some transactions could not be checked against --min-sol because too many arrive ' +
+  'at once, so they are not shown.\n';
 
 /** Resolves when the user presses Ctrl+C or the process gets SIGTERM. */
 function signalShutdown() {
@@ -110,9 +119,29 @@ async function run(argv, io = {}) {
     return 2;
   }
 
+  if (args.missingValue) {
+    stderr.write(`${args.missingValue} needs a value, for example ${args.missingValue} 0.5\n`);
+    return 2;
+  }
+
   if (args.addresses.length === 0) {
     stderr.write(`Expected at least one wallet address.\n\n${HELP}`);
     return 2;
+  }
+
+  let minLamports = null;
+  if (args.minSol !== null) {
+    try {
+      minLamports = parseSolAmount(args.minSol);
+    } catch (error) {
+      if (!(error instanceof AmountError)) throw error;
+      stderr.write(`${error.message}\n`);
+      return 2;
+    }
+    if (!args.explain) {
+      stderr.write('--min-sol needs summaries, so it cannot be combined with --no-explain.\n');
+      return 2;
+    }
   }
 
   const wallets = [];
@@ -147,11 +176,17 @@ async function run(argv, io = {}) {
   let stopped = false;
   let skipped = 0;
 
+  const emit = (event, outcome, seenAt) => {
+    stdout.write(args.json ? formatJson(event, outcome, seenAt) : formatBlock(event, outcome, seenAt));
+  };
+
   const onTransaction = (event) => {
+    if (args.onlyFailed && !event.failed) return;
+
     const seenAt = new Date();
 
     if (!explainer) {
-      stdout.write(formatBlock(event, null, seenAt));
+      emit(event, null, seenAt);
       return;
     }
 
@@ -159,20 +194,28 @@ async function run(argv, io = {}) {
       .explain(event.signature)
       .then((outcome) => {
         if (stopped) return;
+
         if (outcome.skipped) {
           skipped += 1;
           if (skipped === 1) {
-            stderr.write(BUSY_FIRST);
+            stderr.write(minLamports === null ? BUSY_FIRST : BUSY_FIRST_FILTER);
           } else if (skipped % 100 === 0) {
-            stderr.write(`Busy: ${skipped} transactions shown without a summary so far.\n`);
+            const what =
+              minLamports === null ? 'shown without a summary' : 'could not be checked against --min-sol';
+            stderr.write(`Busy: ${skipped} transactions ${what} so far.\n`);
           }
+          // With --min-sol an unchecked transaction cannot be judged, so it is not shown.
+          if (minLamports !== null) return;
+        } else if (minLamports !== null && outcome.ok && !passesMinSol(outcome.json, wallets, minLamports)) {
+          return;
         }
-        stdout.write(formatBlock(event, outcome, seenAt));
+
+        emit(event, outcome, seenAt);
       })
       .catch(() => {
         if (stopped) return;
         const outcome = { ok: false, skipped: false, reason: 'could not summarize this transaction' };
-        stdout.write(formatBlock(event, outcome, seenAt));
+        emit(event, outcome, seenAt);
       });
   };
 

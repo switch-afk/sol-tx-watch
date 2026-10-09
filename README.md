@@ -2,12 +2,12 @@
 
 Stream a Solana wallet's new transactions to your terminal in plain English.
 
-Node 18+. Early release: live streaming and summaries work; JSON output and more filters are coming.
+Node 18+. Early release: streaming, summaries, JSON output and filters work; rate-limit polish is coming.
 
 ## Usage
 
 ```bash
-npx sol-tx-watch <wallet> [<wallet> ...]
+npx sol-tx-watch [options] <wallet> [<wallet> ...]
 ```
 
 Prints one block for every new transaction that mentions a watched wallet: an event line, then a plain-English summary from [sol-tx-explain](https://github.com/switch-afk/sol-tx-explain).
@@ -20,6 +20,31 @@ Prints one block for every new transaction that mentions a watched wallet: an ev
 The summary is a guess from balance changes, which is why it says "Likely". See the sol-tx-explain README for its limits.
 
 Transactions go to stdout. Status messages (watching, disconnected, reconnecting, busy) go to stderr, so you can pipe stdout safely. Press Ctrl+C to stop.
+
+## Options
+
+| Option | What it does |
+| --- | --- |
+| `--json` | Print one JSON object per line instead of text |
+| `--only-failed` | Show only transactions that failed on-chain |
+| `--min-sol <n>` | Show only transactions where a watched wallet gained or lost at least `n` SOL, not counting the fee. Needs summaries. Also accepts `--min-sol=n` |
+| `--no-explain` | Skip the plain-English summaries (faster, lighter on your RPC) |
+| `-h`, `--help` | Show help |
+| `-v`, `--version` | Show the version |
+
+### JSON output
+
+```bash
+npx sol-tx-watch --json <wallet> | jq .
+```
+
+Each line is one object: `seenAt`, `signature`, `slot`, `wallet`, `status` (`success` or `failed`), `error` (the raw on-chain error, or `null`), `summary` (the full sol-tx-explain JSON, or `null`) and `summaryNote` (why there is no summary, or `null`). Amounts inside `summary` are strings, so nothing is rounded.
+
+### Filters
+
+`--only-failed` runs before anything is fetched, so it also saves RPC calls. `--min-sol` needs the summary's balance data, so it cannot be combined with `--no-explain`. On a very busy wallet, transactions that could not be checked are not shown, and you get a notice on stderr. A transaction whose summary fails for another reason is still shown, with a "(no summary: ...)" note, so an RPC hiccup does not hide a large transfer.
+
+## How it behaves
 
 - Connects over one WebSocket and subscribes to each wallet.
 - Reconnects automatically with exponential backoff and jitter.
@@ -58,7 +83,7 @@ Only the hostname is ever printed, never the full URL, so API keys stay out of y
 - [x] Wallet address validation
 - [x] Live WebSocket stream of new transactions, with reconnects
 - [x] Plain-English summary of each transaction
-- [ ] `--json`, `--only-failed`, `--min-sol`
+- [x] `--json`, `--only-failed`, `--min-sol`
 - [ ] Rate-limit handling and clear error messages
 
 ## Development
