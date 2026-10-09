@@ -4,7 +4,8 @@ const pkg = require('../package.json');
 const { AddressError, validateAddress } = require('./address');
 const { parseArgs } = require('./args');
 const { EndpointError, RPC_ENV, WS_ENV, resolveEndpoint } = require('./endpoint');
-const { formatDelay, formatEvent, shortAddress } = require('./format');
+const { createExplainer } = require('./explainer');
+const { formatBlock, formatDelay, shortAddress } = require('./format');
 const { WatchError, watchWallets } = require('./watch');
 
 const HELP = `sol-tx-watch v${pkg.version}
@@ -12,9 +13,10 @@ const HELP = `sol-tx-watch v${pkg.version}
 Stream a Solana wallet's new transactions to your terminal in plain English.
 
 Usage:
-  sol-tx-watch <wallet> [<wallet> ...]
+  sol-tx-watch [--no-explain] <wallet> [<wallet> ...]
 
 Options:
+  --no-explain     Skip the plain-English summaries (faster, lighter on your RPC)
   -h, --help       Show this help
   -v, --version    Show the version
 
@@ -26,13 +28,18 @@ Environment:
 
 Output:
   Transactions go to stdout, status messages go to stderr.
-  Press Ctrl+C to stop.
+  Very busy wallets are too much to explain one by one; some transactions
+  are then shown without a summary. Press Ctrl+C to stop.
 
 Exit codes:
   0  stopped normally
   1  invalid wallet address or endpoint
   2  bad usage
 `;
+
+const BUSY_FIRST =
+  'Busy: some transactions are shown without a summary because too many arrive at once. ' +
+  'Use --no-explain to turn summaries off.\n';
 
 /** Resolves when the user presses Ctrl+C or the process gets SIGTERM. */
 function signalShutdown() {
@@ -78,7 +85,8 @@ function statusPrinter(stderr, endpoint) {
 
 /**
  * Run the CLI. Returns an exit code instead of exiting, so it can be tested.
- * Tests pass io.watch and io.shutdown to avoid real sockets and signals.
+ * Tests pass io.watch, io.explainer and io.shutdown to avoid sockets, the
+ * network and signals.
  */
 async function run(argv, io = {}) {
   const stdout = io.stdout || process.stdout;
@@ -132,6 +140,42 @@ async function run(argv, io = {}) {
     return 1;
   }
 
+  const explainer = args.explain
+    ? io.explainer || createExplainer({ rpcUrl: endpoint.rpcUrl, ...io.explainOptions })
+    : null;
+
+  let stopped = false;
+  let skipped = 0;
+
+  const onTransaction = (event) => {
+    const seenAt = new Date();
+
+    if (!explainer) {
+      stdout.write(formatBlock(event, null, seenAt));
+      return;
+    }
+
+    explainer
+      .explain(event.signature)
+      .then((outcome) => {
+        if (stopped) return;
+        if (outcome.skipped) {
+          skipped += 1;
+          if (skipped === 1) {
+            stderr.write(BUSY_FIRST);
+          } else if (skipped % 100 === 0) {
+            stderr.write(`Busy: ${skipped} transactions shown without a summary so far.\n`);
+          }
+        }
+        stdout.write(formatBlock(event, outcome, seenAt));
+      })
+      .catch(() => {
+        if (stopped) return;
+        const outcome = { ok: false, skipped: false, reason: 'could not summarize this transaction' };
+        stdout.write(formatBlock(event, outcome, seenAt));
+      });
+  };
+
   const watch = io.watch || watchWallets;
   const shutdown = io.shutdown || signalShutdown();
 
@@ -140,7 +184,7 @@ async function run(argv, io = {}) {
     handle = watch({
       url: endpoint.url,
       wallets,
-      onTransaction: (event) => stdout.write(formatEvent(event)),
+      onTransaction,
       onStatus: statusPrinter(stderr, endpoint),
       ...io.watchOptions,
     });
@@ -151,7 +195,9 @@ async function run(argv, io = {}) {
   }
 
   await shutdown;
+  stopped = true;
   handle.close();
+  if (explainer && explainer.stop) explainer.stop();
   stderr.write('Stopped.\n');
   return 0;
 }

@@ -5,8 +5,14 @@ const assert = require('node:assert/strict');
 
 const { parseArgs } = require('../src/args');
 
-test('no arguments gives an empty result', () => {
-  assert.deepEqual(parseArgs([]), { help: false, version: false, unknown: null, addresses: [] });
+test('no arguments gives the defaults', () => {
+  assert.deepEqual(parseArgs([]), {
+    help: false,
+    version: false,
+    explain: true,
+    unknown: null,
+    addresses: [],
+  });
 });
 
 test('positional arguments are collected as addresses, in order', () => {
@@ -18,6 +24,12 @@ test('help and version flags are recognised in both forms', () => {
   assert.equal(parseArgs(['--help']).help, true);
   assert.equal(parseArgs(['-v']).version, true);
   assert.equal(parseArgs(['--version']).version, true);
+});
+
+test('--no-explain turns summaries off, before or after the addresses', () => {
+  assert.equal(parseArgs(['--no-explain', 'aaa']).explain, false);
+  assert.equal(parseArgs(['aaa', '--no-explain']).explain, false);
+  assert.deepEqual(parseArgs(['aaa', '--no-explain']).addresses, ['aaa']);
 });
 
 test('flags can come after addresses', () => {
