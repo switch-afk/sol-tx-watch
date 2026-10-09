@@ -10,6 +10,10 @@ test('no arguments gives the defaults', () => {
     help: false,
     version: false,
     explain: true,
+    json: false,
+    onlyFailed: false,
+    minSol: null,
+    missingValue: null,
     unknown: null,
     addresses: [],
   });
@@ -26,10 +30,32 @@ test('help and version flags are recognised in both forms', () => {
   assert.equal(parseArgs(['--version']).version, true);
 });
 
-test('--no-explain turns summaries off, before or after the addresses', () => {
-  assert.equal(parseArgs(['--no-explain', 'aaa']).explain, false);
-  assert.equal(parseArgs(['aaa', '--no-explain']).explain, false);
-  assert.deepEqual(parseArgs(['aaa', '--no-explain']).addresses, ['aaa']);
+test('--no-explain, --json and --only-failed are switches', () => {
+  const args = parseArgs(['--no-explain', '--json', '--only-failed', 'aaa']);
+  assert.equal(args.explain, false);
+  assert.equal(args.json, true);
+  assert.equal(args.onlyFailed, true);
+  assert.deepEqual(args.addresses, ['aaa']);
+});
+
+test('--min-sol takes its value from the next argument', () => {
+  const args = parseArgs(['--min-sol', '0.5', 'aaa']);
+  assert.equal(args.minSol, '0.5');
+  assert.deepEqual(args.addresses, ['aaa']);
+});
+
+test('--min-sol also accepts the = form', () => {
+  const args = parseArgs(['--min-sol=0.5', 'aaa']);
+  assert.equal(args.minSol, '0.5');
+  assert.deepEqual(args.addresses, ['aaa']);
+});
+
+test('--min-sol without a value is reported and does not swallow the next flag', () => {
+  assert.equal(parseArgs(['aaa', '--min-sol']).missingValue, '--min-sol');
+
+  const args = parseArgs(['--min-sol', '--json', 'aaa']);
+  assert.equal(args.missingValue, '--min-sol');
+  assert.equal(args.json, true);
 });
 
 test('flags can come after addresses', () => {

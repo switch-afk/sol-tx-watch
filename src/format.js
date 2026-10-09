@@ -27,9 +27,28 @@ function formatBlock(event, outcome, now = new Date()) {
   return `${line}    (no summary: ${outcome.reason})\n`;
 }
 
+/**
+ * One JSON object on one line. `summary` is the full sol-tx-explain JSON, or
+ * null when there is none; `summaryNote` says why when a summary was wanted
+ * but could not be made.
+ */
+function formatJson(event, outcome, now = new Date()) {
+  const hasSummary = Boolean(outcome && outcome.ok);
+  return `${JSON.stringify({
+    seenAt: now.toISOString(),
+    signature: event.signature,
+    slot: event.slot,
+    wallet: event.wallet,
+    status: event.failed ? 'failed' : 'success',
+    error: event.err,
+    summary: hasSummary ? outcome.json : null,
+    summaryNote: hasSummary || !outcome ? null : outcome.reason,
+  })}\n`;
+}
+
 /** 2500 -> "2.5s" */
 function formatDelay(ms) {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-module.exports = { formatBlock, formatDelay, formatEvent, shortAddress };
+module.exports = { formatBlock, formatDelay, formatEvent, formatJson, shortAddress };
