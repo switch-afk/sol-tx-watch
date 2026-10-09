@@ -1,6 +1,7 @@
 'use strict';
 
 const DEFAULT_WS = 'wss://api.mainnet-beta.solana.com';
+const DEFAULT_RPC = 'https://api.mainnet-beta.solana.com';
 const RPC_ENV = 'SOL_TX_WATCH_RPC';
 const WS_ENV = 'SOL_TX_WATCH_WS';
 
@@ -50,23 +51,40 @@ function normalize(value, name, allowHttp) {
   return parsed.toString();
 }
 
+/** wss:// -> https://, ws:// -> http:// (input is already a normalized ws(s) URL). */
+function toHttpUrl(wsUrl) {
+  const parsed = new URL(wsUrl);
+  parsed.protocol = parsed.protocol === 'wss:' ? 'https:' : 'http:';
+  return parsed.toString();
+}
+
 /**
- * Pick the WebSocket endpoint: SOL_TX_WATCH_WS wins, then SOL_TX_WATCH_RPC
- * (converted from http(s) to ws(s)), then the public mainnet endpoint.
+ * Pick the endpoints.
+ *   url     WebSocket endpoint for streaming: SOL_TX_WATCH_WS, then
+ *           SOL_TX_WATCH_RPC (http(s) converted to ws(s)), then the public one.
+ *   rpcUrl  HTTP endpoint for fetching transactions: SOL_TX_WATCH_RPC, then
+ *           SOL_TX_WATCH_WS (ws(s) converted to http(s)), then the public one.
  */
 function resolveEndpoint(env = process.env) {
   let url;
+  let rpcUrl;
+
   if (env[WS_ENV]) {
     url = normalize(env[WS_ENV], WS_ENV, false);
+    rpcUrl = toHttpUrl(env[RPC_ENV] ? normalize(env[RPC_ENV], RPC_ENV, true) : url);
   } else if (env[RPC_ENV]) {
     url = normalize(env[RPC_ENV], RPC_ENV, true);
+    rpcUrl = toHttpUrl(url);
   } else {
     url = DEFAULT_WS;
+    rpcUrl = DEFAULT_RPC;
   }
-  return { url, host: hostLabel(url) };
+
+  return { url, rpcUrl, host: hostLabel(url) };
 }
 
 module.exports = {
+  DEFAULT_RPC,
   DEFAULT_WS,
   EndpointError,
   RPC_ENV,

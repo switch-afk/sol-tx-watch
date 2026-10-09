@@ -1,6 +1,6 @@
 'use strict';
 
-/** First and last four characters, e.g. TokE...Q5DA. */
+/** First and last four characters, e.g. Toke...Q5DA. */
 function shortAddress(address) {
   if (address.length <= 11) return address;
   return `${address.slice(0, 4)}...${address.slice(-4)}`;
@@ -16,9 +16,20 @@ function formatEvent(event, now = new Date()) {
   return `${parts.join('  ')}\n`;
 }
 
+/**
+ * The event line, followed by an indented summary line when there is one.
+ * A transaction skipped because of load, or printed with no outcome, gets just the line.
+ */
+function formatBlock(event, outcome, now = new Date()) {
+  const line = formatEvent(event, now);
+  if (!outcome || outcome.skipped) return line;
+  if (outcome.ok) return `${line}    ${outcome.headline}\n`;
+  return `${line}    (no summary: ${outcome.reason})\n`;
+}
+
 /** 2500 -> "2.5s" */
 function formatDelay(ms) {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-module.exports = { formatDelay, formatEvent, shortAddress };
+module.exports = { formatBlock, formatDelay, formatEvent, shortAddress };

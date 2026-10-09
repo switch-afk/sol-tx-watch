@@ -36,6 +36,7 @@
   },
   "homepage": "https://github.com/switch-afk/sol-tx-watch#readme",
   "dependencies": {
+    "sol-tx-explain": "^0.2.1",
     "ws": "^8.22.0"
   }
 }
