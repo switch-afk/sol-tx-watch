@@ -3,8 +3,9 @@
 const pkg = require('../package.json');
 const { AddressError, validateAddress } = require('./address');
 const { parseArgs } = require('./args');
-
-const ENV_VAR = 'SOL_TX_WATCH_RPC';
+const { EndpointError, RPC_ENV, WS_ENV, resolveEndpoint } = require('./endpoint');
+const { formatDelay, formatEvent, shortAddress } = require('./format');
+const { WatchError, watchWallets } = require('./watch');
 
 const HELP = `sol-tx-watch v${pkg.version}
 
@@ -18,22 +19,71 @@ Options:
   -v, --version    Show the version
 
 Environment:
-  ${ENV_VAR}   Your own RPC endpoint (recommended; public RPCs
-                         rate-limit heavily)
+  ${RPC_ENV}   Your own RPC endpoint (recommended; public RPCs
+                         rate-limit heavily). An https:// URL is converted
+                         to wss:// for streaming.
+  ${WS_ENV}    WebSocket endpoint, if it differs from the RPC URL
+
+Output:
+  Transactions go to stdout, status messages go to stderr.
+  Press Ctrl+C to stop.
 
 Exit codes:
-  0  ok
-  1  invalid wallet address
+  0  stopped normally
+  1  invalid wallet address or endpoint
   2  bad usage
 `;
 
+/** Resolves when the user presses Ctrl+C or the process gets SIGTERM. */
+function signalShutdown() {
+  return new Promise((resolve) => {
+    process.once('SIGINT', resolve);
+    process.once('SIGTERM', resolve);
+  });
+}
+
+function statusPrinter(stderr, endpoint) {
+  let wasReady = false;
+
+  return (status) => {
+    switch (status.type) {
+      case 'ready':
+        if (wasReady) {
+          stderr.write(`Reconnected to ${endpoint.host}.\n`);
+        } else {
+          const noun = status.count === 1 ? 'wallet' : 'wallets';
+          stderr.write(
+            `Watching ${status.count} ${noun} on ${endpoint.host}. Press Ctrl+C to stop.\n`
+          );
+        }
+        wasReady = true;
+        break;
+      case 'disconnected':
+        stderr.write(
+          `Disconnected from ${endpoint.host} (${status.reason}). ` +
+            `Reconnecting in ${formatDelay(status.retryInMs)}...\n`
+        );
+        break;
+      case 'subscribe-error':
+        stderr.write(`Could not subscribe to ${shortAddress(status.wallet)}: ${status.message}\n`);
+        break;
+      case 'error':
+        stderr.write(`${status.message}\n`);
+        break;
+      default:
+        break;
+    }
+  };
+}
+
 /**
- * Run the CLI. Returns an exit code instead of exiting,
- * so it can be tested without spawning a process.
+ * Run the CLI. Returns an exit code instead of exiting, so it can be tested.
+ * Tests pass io.watch and io.shutdown to avoid real sockets and signals.
  */
 async function run(argv, io = {}) {
   const stdout = io.stdout || process.stdout;
   const stderr = io.stderr || process.stderr;
+  const env = io.env || process.env;
 
   const args = parseArgs(argv);
 
@@ -73,11 +123,37 @@ async function run(argv, io = {}) {
 
   if (failed) return 1;
 
-  stdout.write(
-    `Checked ${wallets.length} wallet address${wallets.length === 1 ? '' : 'es'}. ` +
-      'Live streaming is not built yet; it arrives in the next release.\n'
-  );
+  let endpoint;
+  try {
+    endpoint = resolveEndpoint(env);
+  } catch (error) {
+    if (!(error instanceof EndpointError)) throw error;
+    stderr.write(`${error.message}\n`);
+    return 1;
+  }
+
+  const watch = io.watch || watchWallets;
+  const shutdown = io.shutdown || signalShutdown();
+
+  let handle;
+  try {
+    handle = watch({
+      url: endpoint.url,
+      wallets,
+      onTransaction: (event) => stdout.write(formatEvent(event)),
+      onStatus: statusPrinter(stderr, endpoint),
+      ...io.watchOptions,
+    });
+  } catch (error) {
+    if (!(error instanceof WatchError)) throw error;
+    stderr.write(`${error.message}\n`);
+    return 1;
+  }
+
+  await shutdown;
+  handle.close();
+  stderr.write('Stopped.\n');
   return 0;
 }
 
-module.exports = { run, HELP, ENV_VAR };
+module.exports = { run, HELP };
