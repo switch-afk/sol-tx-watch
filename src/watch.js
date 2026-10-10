@@ -1,10 +1,13 @@
 'use strict';
 
+const { classifyConnectionError } = require('./errors');
+
 const DEFAULT_OPTIONS = {
   initialDelayMs: 1000,
   maxDelayMs: 30000,
   pingIntervalMs: 30000,
   seenLimit: 2000,
+  rateLimitMinDelayMs: 5000,
 };
 
 class WatchError extends Error {
@@ -32,8 +35,10 @@ function describeError(error, url) {
  *
  * Calls onTransaction({ wallet, signature, slot, failed, err }) once per signature.
  * Calls onStatus({ type, ... }) with type "connecting", "ready", "disconnected",
- * "subscribe-error" or "error". Reconnects with backoff until close() is called.
- * Returns { close }.
+ * "subscribe-error", "fatal" or "error". Reconnects with backoff until close()
+ * is called, except after a "fatal" status (wrong key or URL), where it stops
+ * for good. A "disconnected" status has rateLimited: true when the endpoint
+ * answered 429. Returns { close }.
  */
 function watchWallets(options) {
   const {
@@ -138,11 +143,18 @@ function watchWallets(options) {
     }
   }
 
-  function scheduleReconnect(reason) {
+  function scheduleReconnect(reason, rateLimited) {
     if (closed) return;
-    const delay = backoffDelay(attempt, settings, random);
+    let delay = backoffDelay(attempt, settings, random);
+    if (rateLimited) {
+      delay = Math.min(settings.maxDelayMs, Math.max(delay, settings.rateLimitMinDelayMs));
+    }
     attempt += 1;
-    onStatus({ type: 'disconnected', reason, retryInMs: delay });
+
+    const status = { type: 'disconnected', reason, retryInMs: delay };
+    if (rateLimited) status.rateLimited = true;
+    onStatus(status);
+
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       try {
@@ -193,9 +205,18 @@ function watchWallets(options) {
       stopPing();
       pending.clear();
       active.clear();
-      const reason = lastError || 'connection closed';
+
+      const info = classifyConnectionError(lastError);
+      const reason = info ? info.text : lastError || 'connection closed';
       lastError = null;
-      scheduleReconnect(reason);
+
+      if (info && info.fatal) {
+        closed = true;
+        onStatus({ type: 'fatal', message: reason });
+        return;
+      }
+
+      scheduleReconnect(reason, Boolean(info && info.rateLimited));
     });
   }
 
