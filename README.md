@@ -2,7 +2,7 @@
 
 Stream a Solana wallet's new transactions to your terminal in plain English.
 
-Node 18+. Early release: streaming, summaries, JSON output and filters work; rate-limit polish is coming.
+Node 18+. Zero setup beyond an optional RPC endpoint.
 
 ## Usage
 
@@ -78,19 +78,36 @@ If only `SOL_TX_WATCH_WS` is set, the fetch URL is derived from it.
 
 Only the hostname is ever printed, never the full URL, so API keys stay out of your terminal output.
 
+## Troubleshooting
+
+Connection problems are reported on stderr in plain English. The common ones:
+
+| Message | What it means | What to do |
+| --- | --- | --- |
+| `the endpoint is rate limiting connections (HTTP 429)` | The endpoint is throttling you. The tool waits at least 5 seconds and retries. | Use your own RPC, check your plan's limits, or add `--no-explain` to send fewer requests. |
+| `the endpoint rejected the connection (HTTP 401 or 403)` | The API key in your URL is missing, wrong or expired. The tool stops instead of retrying. | Check the key in `SOL_TX_WATCH_RPC` or `SOL_TX_WATCH_WS`. |
+| `the endpoint was not found (HTTP 404)` | The URL path is wrong. The tool stops instead of retrying. | Check the endpoint URL. |
+| `could not find the endpoint host (DNS lookup failed)` | The hostname does not resolve, or you are offline. | Check the hostname and your network. The tool keeps retrying. |
+| `the endpoint refused the connection`, `the connection timed out`, `the connection was reset` | The endpoint or the network dropped you. | Usually temporary. The tool keeps retrying with backoff. |
+| `(no summary: ...)` | The summary could not be made, often because the RPC does not have a very new transaction yet or is rate limiting. | The transaction is still shown. Retry with your own RPC if it happens a lot. |
+
+Exit codes: `0` stopped normally, `1` invalid wallet address, bad endpoint setting, or an endpoint that refused the connection, `2` bad usage.
+
 ## Roadmap
 
 - [x] Wallet address validation
 - [x] Live WebSocket stream of new transactions, with reconnects
 - [x] Plain-English summary of each transaction
 - [x] `--json`, `--only-failed`, `--min-sol`
-- [ ] Rate-limit handling and clear error messages
+- [x] Rate-limit handling and clear error messages
 
 ## Development
 
 ```bash
 npm test
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
 ## License
 
