@@ -4,6 +4,7 @@ const pkg = require('../package.json');
 const { AddressError, validateAddress } = require('./address');
 const { parseArgs } = require('./args');
 const { EndpointError, RPC_ENV, WS_ENV, resolveEndpoint } = require('./endpoint');
+const { isRateLimitText } = require('./errors');
 const { createExplainer } = require('./explainer');
 const { AmountError, parseSolAmount, passesMinSol } = require('./filters');
 const { formatBlock, formatDelay, formatJson, shortAddress } = require('./format');
@@ -38,7 +39,7 @@ Output:
 
 Exit codes:
   0  stopped normally
-  1  invalid wallet address or endpoint
+  1  invalid wallet address or endpoint, or the endpoint refused the connection
   2  bad usage
 `;
 
@@ -58,7 +59,7 @@ function signalShutdown() {
   });
 }
 
-function statusPrinter(stderr, endpoint) {
+function statusPrinter(stderr, endpoint, hooks) {
   let wasReady = false;
 
   return (status) => {
@@ -79,9 +80,15 @@ function statusPrinter(stderr, endpoint) {
           `Disconnected from ${endpoint.host} (${status.reason}). ` +
             `Reconnecting in ${formatDelay(status.retryInMs)}...\n`
         );
+        if (status.rateLimited) hooks.onRateLimit();
         break;
       case 'subscribe-error':
         stderr.write(`Could not subscribe to ${shortAddress(status.wallet)}: ${status.message}\n`);
+        if (isRateLimitText(status.message)) hooks.onRateLimit();
+        break;
+      case 'fatal':
+        stderr.write(`Cannot connect to ${endpoint.host}: ${status.message}\n`);
+        hooks.onFatal();
         break;
       case 'error':
         stderr.write(`${status.message}\n`);
@@ -173,8 +180,33 @@ async function run(argv, io = {}) {
     ? io.explainer || createExplainer({ rpcUrl: endpoint.rpcUrl, ...io.explainOptions })
     : null;
 
+  const usingPublicRpc = !env[RPC_ENV] && !env[WS_ENV];
+
   let stopped = false;
   let skipped = 0;
+  let rateLimitHintShown = false;
+
+  // Shown once per run, however many times the endpoint throttles us.
+  const showRateLimitHint = () => {
+    if (rateLimitHintShown) return;
+    rateLimitHintShown = true;
+    if (usingPublicRpc) {
+      stderr.write(
+        `The public RPC rate-limits heavily. Set ${RPC_ENV} to your own endpoint to avoid this.\n`
+      );
+    } else {
+      const extra = args.explain ? ', or use --no-explain to send fewer requests' : '';
+      stderr.write(
+        `Your RPC endpoint is rate limiting requests. Wait a moment, check your plan's limits${extra}.\n`
+      );
+    }
+  };
+
+  let fatal = false;
+  let resolveFatal;
+  const fatalSignal = new Promise((resolve) => {
+    resolveFatal = resolve;
+  });
 
   const emit = (event, outcome, seenAt) => {
     stdout.write(args.json ? formatJson(event, outcome, seenAt) : formatBlock(event, outcome, seenAt));
@@ -194,6 +226,8 @@ async function run(argv, io = {}) {
       .explain(event.signature)
       .then((outcome) => {
         if (stopped) return;
+
+        if (outcome.rateLimited) showRateLimitHint();
 
         if (outcome.skipped) {
           skipped += 1;
@@ -228,7 +262,13 @@ async function run(argv, io = {}) {
       url: endpoint.url,
       wallets,
       onTransaction,
-      onStatus: statusPrinter(stderr, endpoint),
+      onStatus: statusPrinter(stderr, endpoint, {
+        onRateLimit: showRateLimitHint,
+        onFatal: () => {
+          fatal = true;
+          resolveFatal();
+        },
+      }),
       ...io.watchOptions,
     });
   } catch (error) {
@@ -237,10 +277,13 @@ async function run(argv, io = {}) {
     return 1;
   }
 
-  await shutdown;
+  await Promise.race([shutdown, fatalSignal]);
   stopped = true;
   handle.close();
   if (explainer && explainer.stop) explainer.stop();
+
+  if (fatal) return 1;
+
   stderr.write('Stopped.\n');
   return 0;
 }

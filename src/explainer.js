@@ -1,6 +1,7 @@
 'use strict';
 
 const { BusyError, createLimiter } = require('./limiter');
+const { isRateLimitText } = require('./errors');
 
 const DEFAULT_OPTIONS = {
   concurrency: 3,
@@ -23,6 +24,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *   { ok: false, skipped: true, reason }    when too many are in flight
  *   { ok: false, skipped: false, reason }   when no summary could be made
  *
+ * The last form also has rateLimited: true when the RPC was throttling us.
+ *
  * A new transaction is often not fetchable for a moment, so a missing
  * transaction is retried with backoff before giving up.
  */
@@ -39,6 +42,7 @@ function createExplainer(options = {}) {
 
   async function explain(signature) {
     let reason = NOT_YET;
+    let limited = false;
 
     for (let attempt = 0; attempt < settings.attempts; attempt += 1) {
       if (attempt > 0) {
@@ -47,6 +51,8 @@ function createExplainer(options = {}) {
         );
       }
       if (stopped) return { ok: false, skipped: false, reason: 'stopped' };
+
+      limited = false;
 
       try {
         const result = await limiter.run(() => explainTransaction(signature, { rpcUrl }));
@@ -67,6 +73,7 @@ function createExplainer(options = {}) {
         }
         if (error && error.name === 'RpcError') {
           reason = error.message;
+          limited = isRateLimitText(error.message);
           continue;
         }
         const detail = error && error.message ? error.message : 'unknown error';
@@ -78,7 +85,9 @@ function createExplainer(options = {}) {
       }
     }
 
-    return { ok: false, skipped: false, reason };
+    const outcome = { ok: false, skipped: false, reason };
+    if (limited) outcome.rateLimited = true;
+    return outcome;
   }
 
   function stop() {
